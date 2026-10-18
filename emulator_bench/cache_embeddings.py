@@ -8,12 +8,12 @@ from pathlib import Path
 
 import torch
 try:
-    from src.utils.rich_progress import progress, write
+    from src.utils.rich_progress import progress
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from src.utils.rich_progress import progress, write
+    from src.utils.rich_progress import progress
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from emulator_bench.common import (
     DEFAULT_BASE_DIR,
+    CACHE_VERSION,
     DEFAULT_EMBEDDINGS_DIR,
     discover_split_jobs,
     ligand_cache_path,
@@ -64,7 +65,7 @@ def cache_proteins_single_gpu(device_str, sequences, args):
     pending = [
         seq
         for seq in sequences
-        if args.overwrite or not protein_cache_path(args.embeddings_dir, seq).exists()
+        if args.overwrite or not protein_cache_path(args.embeddings_dir, seq, args.max_seq_len, args.protein_dtype).exists()
     ]
     if not pending:
         return {"proteins_total": len(sequences), "proteins_written": 0}
@@ -88,7 +89,7 @@ def cache_proteins_single_gpu(device_str, sequences, args):
             long_seq_stride=args.long_seq_stride,
         )
         save_protein_npz(
-            protein_cache_path(args.embeddings_dir, sequence),
+            protein_cache_path(args.embeddings_dir, sequence, args.max_seq_len, args.protein_dtype),
             protein_cache_item(sequence, embedded[sequence], protein_dtype=args.protein_dtype),
         )
         written += 1
@@ -129,7 +130,7 @@ def cache_proteins_multi_gpu(args, sequences, gpus):
     pending = [
         seq
         for seq in sequences
-        if args.overwrite or not protein_cache_path(args.embeddings_dir, seq).exists()
+        if args.overwrite or not protein_cache_path(args.embeddings_dir, seq, args.max_seq_len, args.protein_dtype).exists()
     ]
     if not pending:
         print("Protein cache is already complete.")
@@ -140,7 +141,7 @@ def cache_proteins_multi_gpu(args, sequences, gpus):
     chunks = [pending[i * chunk_size : (i + 1) * chunk_size] for i in range(n_gpus)]
     chunks = [c for c in chunks if c]  # drop empty tail chunks
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="emosaic_cache_"))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="tmp_workers_", dir=args.embeddings_dir))
     procs = []
     for i, (gpu_id, chunk) in enumerate(zip(gpus, chunks)):
         seq_file = tmp_dir / f"seqs_gpu{i}.pkl"
@@ -268,7 +269,7 @@ def main():
         ligand_stats = cache_ligands(args, smiles_values)
 
     manifest = {
-        "cache_version": 2,
+        "cache_version": CACHE_VERSION,
         "base_dir": str(args.base_dir),
         "embeddings_dir": str(args.embeddings_dir),
         "sequence_col": args.sequence_col,

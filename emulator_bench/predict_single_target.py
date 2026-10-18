@@ -48,6 +48,8 @@ def main():
 
     protein_store = ProteinEmbeddingStore(
         Path(args.embeddings_dir),
+        int(train_args["max_length"]),
+        train_args["protein_dtype"],
         sequences=frame[args.sequence_col].astype(str).tolist(),
         preload=False,
         max_items=args.protein_cache_items,

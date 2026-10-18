@@ -1,5 +1,3 @@
-import io
-import os
 import pickle
 import sys
 import zipfile
@@ -7,7 +5,7 @@ import zlib
 from collections import OrderedDict
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -217,14 +215,24 @@ def load_ligand_pt(path: Path) -> Dict:
 class ProteinEmbeddingStore:
     """LRU-backed reader for cached per-residue protein embeddings."""
 
-    def __init__(self, embeddings_dir: Path, sequences: Optional[Sequence[str]] = None, preload: bool = False, max_items: int = 512):
+    def __init__(
+        self,
+        embeddings_dir: Path,
+        max_seq_len: int,
+        protein_dtype: str,
+        sequences: Optional[Sequence[str]] = None,
+        preload: bool = False,
+        max_items: int = 512,
+    ):
         self.embeddings_dir = Path(embeddings_dir)
+        self.max_seq_len = int(max_seq_len)
+        self.protein_dtype = protein_dtype
         self.max_items = max(1, int(max_items))
         self._cache: "OrderedDict[str, Dict[str, np.ndarray]]" = OrderedDict()
         if preload and sequences is not None:
             unique_sequences = sorted({normalize_sequence(sequence) for sequence in sequences})
             for sequence in unique_sequences:
-                path = protein_cache_path(self.embeddings_dir, sequence)
+                path = protein_cache_path(self.embeddings_dir, sequence, self.max_seq_len, self.protein_dtype)
                 if not path.exists():
                     raise FileNotFoundError(f"Missing cached protein embedding: {path}")
                 self._cache[sequence] = load_protein_npz(path)
@@ -234,7 +242,7 @@ class ProteinEmbeddingStore:
         if normalized in self._cache:
             self._cache.move_to_end(normalized)
             return self._cache[normalized]
-        path = protein_cache_path(self.embeddings_dir, normalized)
+        path = protein_cache_path(self.embeddings_dir, normalized, self.max_seq_len, self.protein_dtype)
         if not path.exists():
             raise FileNotFoundError(f"Missing cached protein embedding: {path}")
         item = load_protein_npz(path)

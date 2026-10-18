@@ -20,11 +20,15 @@ The threshold folders come from disk. Use `--thresholds threshold_0.05` to selec
 
 ## Outputs
 
-- Results: `results/<task>/<split_group>[/<threshold>]/seed_<n>/` in this repo (`--output_dir`).
+- Results: `<EMULaToR>/outputs/baselines/eMOSAIC/<task>/<split_group>/<split_name>/seed_<n>/` (`--output_dir`).
+  `<task>` is the name of the `--base_dir` folder (`ki` by default). `<split_name>` is `all` for flat split groups.
   Each folder has `bestmodel.pth`, `logfile.csv`, `final_results_{train,val,test}.csv`,
   `pred_label_{train,val,test}.csv` and `run_summary.json`.
+  `checkpoint_last.pt` holds the resumable training state.
 - Summaries: `emosaic_summary_runs.csv` and `emosaic_summary_splits.csv` in `--output_dir`.
-- Embedding cache: `results/embeddings` (`--embeddings_dir`). It is shared by all tasks and seeds.
+- Embedding cache: `<EMULaToR>/outputs/baselines/eMOSAIC/embeddings` (`--embeddings_dir`). It is shared by all tasks and seeds.
+  It has `proteins_v3/` and `ligands_v3/`. Protein keys cover the model, dtype and `max_seq_len`.
+  Change `CACHE_VERSION` in `common.py` to force a rebuild.
 - The scripts never write to the dataset folders.
 
 ## Model and settings
@@ -32,7 +36,7 @@ The threshold folders come from disk. Use `--thresholds threshold_0.05` to selec
 - Protein: ESMFold-v1 structure-module single representation (384 per residue, from
   `facebook/esmfold_v1` through `transformers`). Sequences are cut to 700 residues and padded.
   A 5-stage 2D ResNet encodes them.
-- Ligand: RDKit 2D graph and a 2-layer GIN (pretrained init, sum pooling).
+- Ligand: RDKit 2D graph and a 2-layer GIN (sum pooling). `GNN(pretrained=True)` only skips the Xavier init of the atom embeddings (PyTorch default init is used). No pretrained GIN weights are loaded.
 - Attentive pooling, then a 3-layer MLP head (1024, 512, 128, 1). Dropout 0.2.
 - Loss MSE. AdamW (lr 1e-4, weight decay 1e-4, amsgrad), cosine warm restarts with T_0 = 10,
   batch size 256, 50 epochs, no gradient clipping.
@@ -44,11 +48,11 @@ The threshold folders come from disk. Use `--thresholds threshold_0.05` to selec
 - `cache_embeddings.py`: builds the protein (ESMFold) and ligand caches once per unique input.
 - `train_single_target_tvt.py`: trains one split (explicit file paths and `--out_dir`).
 - `run_split_benchmarks.py`: caches features, then runs every split group x threshold x seed.
-  `--gpus 0 1` runs jobs in parallel, one process per GPU slot.
+  `--gpus 0 1 --runs_per_gpu 2` runs jobs in parallel, one process per GPU slot.
 - `aggregate_results.py`: mean and variance over seeds for each split.
 - `predict_single_target.py`: predicts for a parquet or CSV file from a saved checkpoint.
 
-See `commands.txt` for the commands.
+See `commands.txt` for the commands. Run them from `baselines/eMOSAIC`.
 
 ## Speed-ups (same model and settings)
 

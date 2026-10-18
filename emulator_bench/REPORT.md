@@ -30,7 +30,7 @@ The paper text says protein sequences longer than 700 are removed. The wrapper t
 ## What the wrapper does now
 - `run_split_benchmarks.py` finds split folders in `--base_dir` (default `data/processed/datasets/kinetic_dataset/ki`): `random_splits_grouped_sequence`, `random_splits_grouped_smiles`, `uniprot_time_splits`, `enzyme_sequence_splits/threshold_*`, `substrate_splits/threshold_*`. Thresholds come from disk (now 0.05 and 0.545).
 - Caches ESMFold and ligand features, then trains each split x seed (default seeds 666 777 888) with the original settings above. Optional `--gpus` runs jobs in parallel.
-- Writes results to `results/<task>/...` in the submodule (gitignored), not into the dataset folders.
+- Writes results to `EMULaToR/outputs/baselines/eMOSAIC/<task>/...`, not into the dataset folders.
 - `aggregate_results.py` computes mean and variance over seeds.
 
 ## Files

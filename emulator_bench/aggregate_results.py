@@ -1,6 +1,6 @@
 """Aggregate eMOSAIC results over seeds.
 
-Reads `<results_dir>/<split_group>[/<threshold>]/seed_<n>/run_summary.json` and writes
+Reads `<results_dir>/<split_group>/<split_name>/seed_<n>/run_summary.json` and writes
 mean and variance (across seeds) of each metric for train, val and test.
 """
 
@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from emulator_bench.common import DEFAULT_BASE_DIR, DEFAULT_RESULTS_ROOT
+from emulator_bench.common import DEFAULT_BASE_DIR, DEFAULT_OUT_ROOT
 
 METRICS = ["mae", "mse", "rmse", "r2_score", "pearson", "spearman", "loss"]
 SPLITS = ("train", "val", "test")
@@ -21,7 +21,7 @@ SPLITS = ("train", "val", "test")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--results_dir", type=Path, default=DEFAULT_RESULTS_ROOT / DEFAULT_BASE_DIR.name)
+    parser.add_argument("--results_dir", type=Path, default=DEFAULT_OUT_ROOT / DEFAULT_BASE_DIR.name)
     args = parser.parse_args()
 
     rows = []

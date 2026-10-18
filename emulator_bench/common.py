@@ -21,8 +21,10 @@ for candidate in (REPO_ROOT, CODE_ROOT, BAM_ROOT):
 
 
 DEFAULT_BASE_DIR = REPO_ROOT.parents[1] / "data" / "processed" / "datasets" / "kinetic_dataset" / "ki"
-DEFAULT_RESULTS_ROOT = REPO_ROOT / "results"
-DEFAULT_EMBEDDINGS_DIR = DEFAULT_RESULTS_ROOT / "embeddings"
+DEFAULT_OUT_ROOT = REPO_ROOT.parents[1] / "outputs" / "baselines" / "eMOSAIC"
+DEFAULT_EMBEDDINGS_DIR = DEFAULT_OUT_ROOT / "embeddings"
+CACHE_VERSION = 3
+PROTEIN_MODEL = "esmfold_v1"
 DEFAULT_SEEDS = [666, 777, 888]
 DEFAULT_SPLIT_GROUPS = [
     "random_splits_grouped_sequence",
@@ -47,22 +49,23 @@ def normalize_sequence(sequence: str) -> str:
     )
 
 
-def protein_cache_key(sequence: str) -> str:
-    return stable_hash(normalize_sequence(sequence))
+def protein_cache_key(sequence: str, max_seq_len: int, protein_dtype: str) -> str:
+    settings = f"{PROTEIN_MODEL}|{protein_dtype}|max_seq_len={max_seq_len}"
+    return stable_hash(f"{settings}|{normalize_sequence(sequence)}")
 
 
 def ligand_cache_key(smiles: str) -> str:
     return stable_hash(str(smiles).strip())
 
 
-def protein_cache_path(embeddings_dir: Path, sequence: str) -> Path:
-    key = protein_cache_key(sequence)
-    return Path(embeddings_dir) / "proteins" / key[:2] / f"{key}.npz"
+def protein_cache_path(embeddings_dir: Path, sequence: str, max_seq_len: int, protein_dtype: str) -> Path:
+    key = protein_cache_key(sequence, max_seq_len, protein_dtype)
+    return Path(embeddings_dir) / f"proteins_v{CACHE_VERSION}" / key[:2] / f"{key}.npz"
 
 
 def ligand_cache_path(embeddings_dir: Path, smiles: str) -> Path:
     key = ligand_cache_key(smiles)
-    return Path(embeddings_dir) / "ligands" / key[:2] / f"{key}.pt"
+    return Path(embeddings_dir) / f"ligands_v{CACHE_VERSION}" / key[:2] / f"{key}.pt"
 
 
 def ensure_parent(path: Path) -> None:
@@ -142,7 +145,7 @@ def discover_split_jobs(
         group_dir = Path(base_dir) / split_group
         if not group_dir.is_dir():
             continue
-        job = _split_job(split_group, split_group, group_dir)
+        job = _split_job(split_group, "all", group_dir)
         if job:
             jobs.append(job)
             continue

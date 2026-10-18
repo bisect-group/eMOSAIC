@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import queue
 import subprocess
@@ -24,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from emulator_bench.common import (
     DEFAULT_BASE_DIR,
     DEFAULT_EMBEDDINGS_DIR,
-    DEFAULT_RESULTS_ROOT,
+    DEFAULT_OUT_ROOT,
     DEFAULT_SEEDS,
     discover_split_jobs,
 )
@@ -70,10 +69,7 @@ def maybe_cache_embeddings(args):
 
 
 def result_dir(job, seed, args):
-    group_dir = Path(args.output_dir) / job["split_group"]
-    if job["split_name"] != job["split_group"]:
-        group_dir = group_dir / job["split_name"]
-    return group_dir / f"seed_{seed}"
+    return Path(args.output_dir) / job["split_group"] / job["split_name"] / f"seed_{seed}"
 
 
 def train_one(job, seed, args, gpu_id=None):
@@ -151,6 +147,8 @@ def train_one(job, seed, args, gpu_id=None):
         str(args.prefetch_factor),
         "--protein_cache_items",
         str(args.protein_cache_items),
+        "--protein_dtype",
+        args.protein_dtype,
         "--seed",
         str(seed),
     ]
@@ -225,7 +223,7 @@ def run_parallel(jobs, args):
 
     threads = []
     for gpu_id in args.gpus:
-        for _ in range(args.trials_per_gpu):
+        for _ in range(args.runs_per_gpu):
             t = threading.Thread(target=worker, args=(str(gpu_id),), daemon=True)
             t.start()
             threads.append(t)
@@ -238,12 +236,12 @@ def main():
     parser = argparse.ArgumentParser(description="Run the eMOSAIC emulator bench across EMULaToR split groups.")
     parser.add_argument("--base_dir", type=str, default=str(DEFAULT_BASE_DIR))
     parser.add_argument("--embeddings_dir", type=str, default=str(DEFAULT_EMBEDDINGS_DIR))
-    parser.add_argument("--output_dir", type=str, default=None, help="Default: results/<base_dir name> in this repo.")
+    parser.add_argument("--output_dir", type=str, default=None, help="Default: <EMULaToR>/outputs/baselines/eMOSAIC/<base_dir name>.")
     parser.add_argument("--split_groups", nargs="+", default=None, help="Default: all EMULaToR split groups found in --base_dir.")
     parser.add_argument("--thresholds", nargs="+", default=None, help="Threshold folder names, e.g. threshold_0.05. Default: all found.")
     parser.add_argument("--seeds", nargs="+", type=int, default=DEFAULT_SEEDS)
     parser.add_argument("--gpus", nargs="+", default=None, help="GPU IDs for parallel execution. If omitted, runs sequentially on --device.")
-    parser.add_argument("--trials_per_gpu", type=int, default=1, help="Concurrent training jobs per GPU when --gpus is set.")
+    parser.add_argument("--runs_per_gpu", type=int, default=1, help="Concurrent runs per GPU when --gpus is set.")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--cache_device", type=str, default="cuda:0")
     parser.add_argument("--skip_cache", action="store_true")
@@ -287,10 +285,10 @@ def main():
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     args = parser.parse_args()
 
-    if args.trials_per_gpu <= 0:
-        raise ValueError("--trials_per_gpu must be a positive integer")
+    if args.runs_per_gpu <= 0:
+        raise ValueError("--runs_per_gpu must be a positive integer")
 
-    args.output_dir = args.output_dir or str(DEFAULT_RESULTS_ROOT / Path(args.base_dir).name)
+    args.output_dir = args.output_dir or str(DEFAULT_OUT_ROOT / Path(args.base_dir).name)
     maybe_cache_embeddings(args)
 
     jobs = discover_split_jobs(Path(args.base_dir), split_groups=args.split_groups, thresholds=args.thresholds)

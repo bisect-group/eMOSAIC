@@ -1,6 +1,5 @@
 import argparse
 import datetime
-import json
 import math
 import os
 import sys
@@ -12,12 +11,12 @@ import numpy as np
 import pandas as pd
 import torch
 try:
-    from src.utils.rich_progress import progress, write
+    from src.utils.rich_progress import progress
 except ModuleNotFoundError:
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from src.utils.rich_progress import progress, write
+    from src.utils.rich_progress import progress
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -203,6 +202,7 @@ def main():
     parser.add_argument("--emb_dim", type=int, default=300)
     parser.add_argument("--gnn_type", type=str, default="gin")
     parser.add_argument("--max_length", type=int, default=700)
+    parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16", help="Dtype of the cached protein embeddings.")
     parser.add_argument("--prot_input_dim", type=int, default=384)
     parser.add_argument("--dropout", type=float, default=0.2)
 
@@ -267,6 +267,8 @@ def main():
 
     protein_store = ProteinEmbeddingStore(
         Path(args.embeddings_dir),
+        args.max_length,
+        args.protein_dtype,
         sequences=all_sequences.tolist(),
         preload=args.preload_proteins,
         max_items=args.protein_cache_items,
