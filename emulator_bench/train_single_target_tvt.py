@@ -32,7 +32,7 @@ from emulator_bench.common import (
     save_json,
     set_seed,
 )
-from emulator_bench.dataset import CachedEmosaicDataset, EmosaicDataLoader
+from emulator_bench.dataset import CachedEmosaicDataset, EmosaicDataLoader, build_protein_table
 from emulator_bench.feature_pipeline import LigandGraphStore, ProteinEmbeddingStore, resolve_amp_dtype
 from emulator_bench.modeling import build_model
 
@@ -56,9 +56,14 @@ def _build_scheduler(optimizer, args):
     raise ValueError(f"Unsupported scheduler: {args.scheduler}")
 
 
-def _prepare_batch(batch, device: torch.device):
+def _prepare_batch(batch, device: torch.device, protein_table=None):
     batch = batch.to(device, non_blocking=True)
-    batch.prot_emb = batch.prot_emb.float()  # embeddings are cached as float16
+    if protein_table is not None:
+        embeddings, masks = protein_table
+        batch.prot_emb = embeddings[batch.prot_idx].float()
+        batch.prot_mask = masks[batch.prot_idx]
+    else:
+        batch.prot_emb = batch.prot_emb.float()  # embeddings are cached as float16
     # prot_mask stays bool — model does .float() in forward
     if hasattr(batch, "value"):
         batch.value = batch.value.float()
@@ -105,7 +110,7 @@ def _monitor_metric_from_arrays(metric_name: str, y_true: np.ndarray, y_pred: np
     raise ValueError("Unsupported monitor_metric: %s" % metric_name)
 
 
-def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation", metric_name="rmse", full_metrics=False, show_progress=True):
+def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation", metric_name="rmse", full_metrics=False, show_progress=True, protein_table=None):
     model.eval()
     preds = []
     truths = []
@@ -115,7 +120,7 @@ def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation
     iterator = progress(loader, desc=desc, unit="batch", leave=False) if show_progress else loader
     with torch.no_grad():
         for batch in iterator:
-            batch = _prepare_batch(batch, device)
+            batch = _prepare_batch(batch, device, protein_table)
             with _autocast_context(device, autocast_dtype):
                 prediction = model(batch)
                 target = batch.value.view_as(prediction)
@@ -140,14 +145,14 @@ def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation
     return truth_np, pred_np, metrics
 
 
-def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=None, desc="Train"):
+def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=None, desc="Train", protein_table=None):
     model.train()
     loss_fn = torch.nn.MSELoss(reduction="mean")
     total_loss = 0.0
     total_samples = 0
     iterator = progress(loader, desc=desc, unit="batch", leave=False)
     for batch in iterator:
-        batch = _prepare_batch(batch, device)
+        batch = _prepare_batch(batch, device, protein_table)
         optimizer.zero_grad(set_to_none=True)
         with _autocast_context(device, autocast_dtype):
             prediction = model(batch)
@@ -224,6 +229,7 @@ def main():
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--persistent_workers", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pin_memory", action="store_true")
+    parser.add_argument("--no_gpu_protein_table", dest="gpu_protein_table", action="store_false", help="Load protein embeddings in the workers instead of one device-resident table (table needs 2 bytes x unique sequences x max_length x emb_dim of device memory).")
     parser.add_argument("--preload_proteins", action="store_true")
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
@@ -289,11 +295,18 @@ def main():
         )
         args.prot_input_dim = detected_prot_dim
 
-    train_dataset = CachedEmosaicDataset(train_df, protein_store, ligand_store, args.max_length, args.sequence_col, args.smiles_col, args.target_col)
-    val_dataset = CachedEmosaicDataset(val_df, protein_store, ligand_store, args.max_length, args.sequence_col, args.smiles_col, args.target_col)
-    test_dataset = CachedEmosaicDataset(test_df, protein_store, ligand_store, args.max_length, args.sequence_col, args.smiles_col, args.target_col)
+    protein_table = protein_index = None
+    if args.gpu_protein_table:
+        *protein_table, protein_index = build_protein_table(protein_store, all_sequences, args.max_length, device)
 
-    pin_memory = args.pin_memory or device.type == "cuda"
+    def make_dataset(frame):
+        return CachedEmosaicDataset(
+            frame, protein_store, ligand_store, args.max_length, args.sequence_col, args.smiles_col, args.target_col, protein_index
+        )
+
+    train_dataset, val_dataset, test_dataset = make_dataset(train_df), make_dataset(val_df), make_dataset(test_df)
+
+    pin_memory = not args.gpu_protein_table and (args.pin_memory or device.type == "cuda")
     loader_kwargs = {
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
@@ -315,6 +328,8 @@ def main():
         max_length=args.max_length,
         prot_input_dim=args.prot_input_dim,
     ).to(device)
+    if args.amp:
+        model.prot_resnet.to(memory_format=torch.channels_last)
     if args.torch_compile and hasattr(torch, "compile"):
         model = torch.compile(model)
 
@@ -356,6 +371,7 @@ def main():
             scaler=scaler,
             autocast_dtype=autocast_dtype,
             desc=f"Epoch {epoch} train",
+            protein_table=protein_table,
         )
 
         row = {
@@ -377,6 +393,7 @@ def main():
                 metric_name=args.monitor_metric,
                 full_metrics=False,
                 show_progress=False,
+                protein_table=protein_table,
             )
             row.update(
                 {
@@ -425,13 +442,13 @@ def main():
     model.load_state_dict(best_checkpoint["model_state_dict"])
 
     final_train_true, final_train_pred, final_train_metrics = evaluate_loader(
-        model, train_loader, device=device, autocast_dtype=autocast_dtype, desc="Final train", metric_name=args.monitor_metric, full_metrics=True,
+        model, train_loader, device=device, autocast_dtype=autocast_dtype, desc="Final train", metric_name=args.monitor_metric, full_metrics=True, protein_table=protein_table,
     )
     final_val_true, final_val_pred, final_val_metrics = evaluate_loader(
-        model, val_loader, device=device, autocast_dtype=autocast_dtype, desc="Final val", metric_name=args.monitor_metric, full_metrics=True,
+        model, val_loader, device=device, autocast_dtype=autocast_dtype, desc="Final val", metric_name=args.monitor_metric, full_metrics=True, protein_table=protein_table,
     )
     final_test_true, final_test_pred, final_test_metrics = evaluate_loader(
-        model, test_loader, device=device, autocast_dtype=autocast_dtype, desc="Final test", metric_name=args.monitor_metric, full_metrics=True,
+        model, test_loader, device=device, autocast_dtype=autocast_dtype, desc="Final test", metric_name=args.monitor_metric, full_metrics=True, protein_table=protein_table,
     )
 
     save_predictions(out_dir / "pred_label_train.csv", final_train_true, final_train_pred)

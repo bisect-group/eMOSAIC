@@ -17,11 +17,13 @@ $PY -u emulator_bench/run_split_benchmarks.py \
   --pin_memory \
   --preload_proteins
 
-# 1b) Two runs per GPU on GPUs 0 and 1, bf16 mixed precision.
+# 1b) One bf16 run per GPU on GPUs 0 and 1 (a full ki run needs about 14 GB, so two do not fit on a 22 GB A10).
 $PY -u emulator_bench/run_split_benchmarks.py \
   --gpus 0 1 \
-  --runs_per_gpu 2 \
+  --runs_per_gpu 1 \
   --amp
+
+# 1c) Add --no_gpu_protein_table to train_single_target_tvt.py or predict_single_target.py if GPU memory is short.
 
 # 2) Mean and variance over seeds.
 $PY emulator_bench/aggregate_results.py --results_dir $OUT/ki

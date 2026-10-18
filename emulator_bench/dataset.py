@@ -39,8 +39,34 @@ def _pad_protein(embedding: np.ndarray, max_length: int):
     return padded, mask, length
 
 
+def build_protein_table(protein_store: ProteinEmbeddingStore, sequences, max_length: int, device: torch.device):
+    """Stack the padded embeddings of all unique sequences on `device`.
+
+    Returns:
+        embeddings: float16 [U, max_length, emb_dim]
+        masks: bool [U, max_length]
+        index: normalized sequence -> row in the tables
+    """
+    index = {}
+    for sequence in sequences:
+        index.setdefault(normalize_sequence(str(sequence)), len(index))
+    embeddings = masks = None
+    for sequence, row in index.items():
+        padded, mask, _ = _pad_protein(protein_store.get(sequence)["embedding"], max_length)
+        if embeddings is None:
+            embeddings = torch.zeros((len(index), max_length, padded.shape[1]), dtype=torch.float16, device=device)
+            masks = torch.zeros((len(index), max_length), dtype=torch.bool, device=device)
+        embeddings[row] = torch.from_numpy(padded)
+        masks[row] = torch.from_numpy(mask)
+    return embeddings, masks, index
+
+
 class CachedEmosaicDataset(Dataset):
-    """Dataset that reads precomputed protein and ligand caches."""
+    """Dataset that reads precomputed protein and ligand caches.
+
+    With `protein_index` (from `build_protein_table`) samples carry only a protein row
+    index `prot_idx`; the embeddings are gathered from the device table.
+    """
 
     def __init__(
         self,
@@ -51,6 +77,7 @@ class CachedEmosaicDataset(Dataset):
         sequence_col: str = "sequence",
         smiles_col: str = "smiles",
         target_col: Optional[str] = "log10_value",
+        protein_index: Optional[dict] = None,
     ):
         self.frame = frame.reset_index(drop=True)
         self.protein_store = protein_store
@@ -59,6 +86,11 @@ class CachedEmosaicDataset(Dataset):
         self.sequence_col = sequence_col
         self.smiles_col = smiles_col
         self.target_col = target_col
+        self.protein_idx = (
+            None
+            if protein_index is None
+            else [protein_index[normalize_sequence(str(seq))] for seq in self.frame[sequence_col]]
+        )
 
     def __len__(self):
         return len(self.frame)
@@ -66,19 +98,20 @@ class CachedEmosaicDataset(Dataset):
     def __getitem__(self, idx):
         row = self.frame.iloc[idx]
         smiles = str(row[self.smiles_col])
-        sequence = normalize_sequence(str(row[self.sequence_col]))
-        protein = self.protein_store.get(sequence)
         ligand = self.ligand_store.get(smiles)
-
-        padded, mask, true_length = _pad_protein(protein["embedding"], self.max_length)
         graph = Data(
             x=torch.from_numpy(np.asarray(ligand["x"], dtype=np.int64)),
             edge_index=torch.from_numpy(np.asarray(ligand["edge_index"], dtype=np.int64)),
             edge_attr=torch.from_numpy(np.asarray(ligand["edge_attr"], dtype=np.int64)),
-            prot_emb=torch.from_numpy(padded).unsqueeze(0),   # (1, L, D) float16
-            prot_mask=torch.from_numpy(mask).unsqueeze(0),    # (1, L) bool
-            prot_length=torch.tensor([int(true_length)], dtype=torch.long),
         )
+        if self.protein_idx is not None:
+            graph.prot_idx = torch.tensor([self.protein_idx[idx]], dtype=torch.long)
+        else:
+            sequence = normalize_sequence(str(row[self.sequence_col]))
+            padded, mask, true_length = _pad_protein(self.protein_store.get(sequence)["embedding"], self.max_length)
+            graph.prot_emb = torch.from_numpy(padded).unsqueeze(0)  # (1, L, D) float16
+            graph.prot_mask = torch.from_numpy(mask).unsqueeze(0)  # (1, L) bool
+            graph.prot_length = torch.tensor([int(true_length)], dtype=torch.long)
         if self.target_col is not None and self.target_col in self.frame.columns:
             value = row[self.target_col]
             if pd.notna(value):

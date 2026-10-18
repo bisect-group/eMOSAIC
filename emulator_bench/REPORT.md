@@ -51,7 +51,8 @@ Unchanged: `dataset.py`, `modeling.py`. No original (non-emulator_bench) code wa
 - `train_single_target_tvt.py` now needs explicit `--train_path/--val_path/--test_path/--out_dir` (the base_dir mode was removed).
 
 ## Deviations from the original protocol
-- Default precision is fp32, like the original (the Leak-CURBER appendix bf16 claim does not override the code). `--amp` is an opt-in flag in training, caching, prediction and the launcher. It turns on bf16 autocast (fp16 with GradScaler on pre-Ampere), TF32 and cudnn benchmark. Protein embeddings are cast to fp32 on the device.
+- Default precision is fp32, like the original (the Leak-CURBER appendix bf16 claim does not override the code). `--amp` is an opt-in flag in training, caching, prediction and the launcher. It turns on bf16 autocast (fp16 with GradScaler on pre-Ampere), TF32, cudnn benchmark and `channels_last` memory format for the protein ResNet. Protein embeddings are cast to fp32 on the device. `channels_last` changes the numerics slightly, so `--amp` runs are not bit-comparable with fp32 runs.
+- By default all unique protein embeddings sit in one fp16 table on the GPU (about 3.2 GB for the full ki set) and workers return only the ligand graph and a row index. The batch values are the same as with per-sample loading, and fp32 runs give identical results. `--no_gpu_protein_table` loads proteins in the workers instead. `--pin_memory` has no effect while the table is on.
 - Protein embeddings stored as fp16 in the cache.
 - Sequences truncated to 700 instead of dropped (see above).
 - Validation ranking uses RMSE (monotone with MSE, same checkpoint).

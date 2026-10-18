@@ -57,6 +57,7 @@ See `commands.txt` for the commands. Run them from `baselines/eMOSAIC`.
 ## Speed-ups (same model and settings)
 
 - Feature cache for proteins and ligands.
-- Training and caching run in fp32 like the original. `--amp` opts in to mixed precision (bf16 on Ampere or newer, fp16 with a grad scaler on older GPUs, plus TF32 and cudnn benchmark).
-- Data loader workers, pinned memory, optional `--preload_proteins`.
+- Training and caching run in fp32 like the original. `--amp` opts in to mixed precision (bf16 on Ampere or newer, fp16 with a grad scaler on older GPUs, plus TF32, cudnn benchmark and `channels_last` for the protein ResNet).
+- Data loader workers, optional `--preload_proteins`.
+- GPU-resident protein embedding table (default; `--no_gpu_protein_table` switches to per-sample loading with pinned memory).
 - Optional `--torch_compile`.

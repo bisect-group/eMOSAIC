@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from emulator_bench.common import DEFAULT_EMBEDDINGS_DIR, read_table, regression_metrics, require_columns, save_json
-from emulator_bench.dataset import CachedEmosaicDataset, EmosaicDataLoader
+from emulator_bench.dataset import CachedEmosaicDataset, EmosaicDataLoader, build_protein_table
 from emulator_bench.feature_pipeline import LigandGraphStore, ProteinEmbeddingStore, resolve_amp_dtype
 from emulator_bench.modeling import build_model
 from emulator_bench.train_single_target_tvt import _autocast_context, _filter_by_max_length, _prepare_batch
@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=4)
     parser.add_argument("--pin_memory", action="store_true")
+    parser.add_argument("--no_gpu_protein_table", dest="gpu_protein_table", action="store_false", help="Load protein embeddings in the workers instead of one device-resident table (table needs 2 bytes x unique sequences x max_length x emb_dim of device memory).")
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
     parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision (default fp32).")
@@ -59,6 +60,11 @@ def main():
         smiles_values=frame[args.smiles_col].astype(str).tolist(),
         preload=not args.lazy_ligands,
     )
+    protein_table = protein_index = None
+    if args.gpu_protein_table:
+        *protein_table, protein_index = build_protein_table(
+            protein_store, frame[args.sequence_col], int(train_args["max_length"]), device
+        )
     dataset = CachedEmosaicDataset(
         frame,
         protein_store,
@@ -67,11 +73,12 @@ def main():
         sequence_col=args.sequence_col,
         smiles_col=args.smiles_col,
         target_col=args.target_col,
+        protein_index=protein_index,
     )
     loader_kwargs = {
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
-        "pin_memory": args.pin_memory or device.type == "cuda",
+        "pin_memory": not args.gpu_protein_table and (args.pin_memory or device.type == "cuda"),
         "shuffle": False,
     }
     if args.num_workers > 0:
@@ -87,13 +94,15 @@ def main():
         prot_input_dim=int(train_args["prot_input_dim"]),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
+    if args.amp:
+        model.prot_resnet.to(memory_format=torch.channels_last)
     model.eval()
 
     preds = []
     truths = []
     with torch.no_grad():
         for batch in loader:
-            batch = _prepare_batch(batch, device)
+            batch = _prepare_batch(batch, device, protein_table)
             with _autocast_context(device, autocast_dtype):
                 prediction = model(batch)
             preds.append(prediction.detach().cpu().float())
