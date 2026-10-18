@@ -1,116 +1,53 @@
-"""
-Aggregate eMOSAIC results across all splits and seeds.
-Computes mean and variance for each metric across seeds, per split type, for Train/Val/Test.
+"""Aggregate eMOSAIC results over seeds.
+
+Reads `<results_dir>/<split_group>[/<threshold>]/seed_<n>/run_summary.json` and writes
+mean and variance (across seeds) of each metric for train, val and test.
 """
 
+import argparse
 import json
-import numpy as np
-import pandas as pd
+import sys
 from pathlib import Path
 
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from emulator_bench.common import DEFAULT_BASE_DIR, DEFAULT_RESULTS_ROOT
+
 METRICS = ["mae", "mse", "rmse", "r2_score", "pearson", "spearman", "loss"]
-SPLITS = {"train": "final_train_metrics", "val": "final_val_metrics", "test": "final_test_metrics"}
-
-DATA_DIR = Path("~/github/EMULaToR/data/processed/baselines/eMOSAIC").expanduser()
-
-
-def find_emosaic_results_dirs(base: Path) -> list[Path]:
-    return sorted(base.rglob("emosaic_results"))
-
-
-def get_split_label(results_dir: Path) -> str:
-    """Build a human-readable label from the path above emosaic_results."""
-    parts = results_dir.relative_to(DATA_DIR).parts[:-1]  # drop 'emosaic_results'
-    return "/".join(parts)
-
-
-def load_seed_metrics(results_dir: Path) -> dict[str, dict[str, list[float]]]:
-    """
-    Returns {split: {metric: [values across seeds]}}
-    """
-    accumulated: dict[str, dict[str, list[float]]] = {
-        split: {m: [] for m in METRICS} for split in SPLITS
-    }
-
-    for seed_dir in sorted(results_dir.iterdir()):
-        if not seed_dir.is_dir() or not seed_dir.name.startswith("seed_"):
-            continue
-        summary_path = seed_dir / "run_summary.json"
-        if not summary_path.exists():
-            print(f"  WARNING: missing {summary_path}")
-            continue
-        with open(summary_path) as f:
-            data = json.load(f)
-        for split, key in SPLITS.items():
-            metrics_block = data.get(key, {})
-            for m in METRICS:
-                if m in metrics_block:
-                    accumulated[split][m].append(metrics_block[m])
-
-    return accumulated
+SPLITS = ("train", "val", "test")
 
 
 def main():
-    results_dirs = find_emosaic_results_dirs(DATA_DIR)
-    if not results_dirs:
-        print("No emosaic_results directories found.")
-        return
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--results_dir", type=Path, default=DEFAULT_RESULTS_ROOT / DEFAULT_BASE_DIR.name)
+    args = parser.parse_args()
 
     rows = []
-    for rd in results_dirs:
-        label = get_split_label(rd)
-        print(f"Processing: {label}")
-        seed_metrics = load_seed_metrics(rd)
-
+    for summary_path in sorted(args.results_dir.rglob("seed_*/run_summary.json")):
+        summary = json.loads(summary_path.read_text())
+        seed_dir = summary_path.parent
         for split in SPLITS:
-            for metric in METRICS:
-                values = seed_metrics[split][metric]
-                if not values:
-                    mean, var, n = float("nan"), float("nan"), 0
-                else:
-                    arr = np.array(values)
-                    mean = float(np.mean(arr))
-                    var = float(np.var(arr, ddof=1) if len(arr) > 1 else 0.0)
-                    n = len(arr)
-                rows.append({
-                    "split_type": label,
+            rows.append(
+                {
+                    "split_type": seed_dir.parent.relative_to(args.results_dir).as_posix(),
                     "tvt": split,
-                    "metric": metric,
-                    "mean": mean,
-                    "var": var,
-                    "n_seeds": n,
-                })
+                    "seed": int(seed_dir.name.removeprefix("seed_")),
+                    **{m: v for m, v in summary[f"final_{split}_metrics"].items() if m in METRICS},
+                }
+            )
+    if not rows:
+        raise SystemExit(f"No run_summary.json files found under {args.results_dir}")
 
-    df = pd.DataFrame(rows)
-
-    # Wide format: one row per (split_type, tvt), columns for each metric mean/var
-    wide_rows = []
-    for (split_type, tvt), grp in df.groupby(["split_type", "tvt"], sort=False):
-        row = {"split_type": split_type, "tvt": tvt}
-        for _, r in grp.iterrows():
-            row[f"{r['metric']}_mean"] = r["mean"]
-            row[f"{r['metric']}_var"] = r["var"]
-        row["n_seeds"] = grp["n_seeds"].iloc[0]
-        wide_rows.append(row)
-    wide_df = pd.DataFrame(wide_rows)
-
-    # Order columns nicely
-    metric_cols = [f"{m}_{stat}" for m in METRICS for stat in ("mean", "var")]
-    col_order = ["split_type", "tvt"] + metric_cols + ["n_seeds"]
-    wide_df = wide_df[[c for c in col_order if c in wide_df.columns]]
-
-    out_long = DATA_DIR / "aggregated_results_long.csv"
-    out_wide = DATA_DIR / "aggregated_results_wide.csv"
-    df.to_csv(out_long, index=False)
-    wide_df.to_csv(out_wide, index=False)
-
-    print(f"\nSaved long-form results to:  {out_long}")
-    print(f"Saved wide-form results to:  {out_wide}")
-    print("\n--- Wide-form preview ---")
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", 200)
-    pd.set_option("display.float_format", "{:.4f}".format)
-    print(wide_df.to_string(index=False))
+    grouped = pd.DataFrame(rows).groupby(["split_type", "tvt"], sort=False)
+    wide = grouped[METRICS].agg(["mean", "var"])
+    wide.columns = [f"{metric}_{stat}" for metric, stat in wide.columns]
+    wide["n_seeds"] = grouped["seed"].nunique()
+    out_path = args.results_dir / "aggregated_results_wide.csv"
+    wide.reset_index().to_csv(out_path, index=False)
+    print(wide.to_string(float_format="{:.4f}".format))
+    print(f"Saved {out_path}")
 
 
 if __name__ == "__main__":

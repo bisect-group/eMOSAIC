@@ -23,11 +23,9 @@ if str(REPO_ROOT) not in sys.path:
 from emulator_bench.common import (
     DEFAULT_BASE_DIR,
     DEFAULT_EMBEDDINGS_DIR,
-    DEFAULT_SPLIT_GROUPS,
     discover_split_jobs,
     ligand_cache_path,
     normalize_sequence,
-    normalize_threshold_args,
     protein_cache_path,
     read_table,
     save_json,
@@ -72,7 +70,7 @@ def cache_proteins_single_gpu(device_str, sequences, args):
         return {"proteins_total": len(sequences), "proteins_written": 0}
 
     device = torch.device(device_str)
-    autocast_dtype, precision_mode = resolve_amp_dtype(device)
+    autocast_dtype, precision_mode = resolve_amp_dtype(device, args.amp)
     print(f"[{device_str}] Caching {len(pending)} proteins | precision: {precision_mode}", flush=True)
     model = load_esmfold_model(device, chunk_size=args.chunk_size)
 
@@ -113,6 +111,7 @@ def _worker_main():
     parser.add_argument("--chunk_size", type=int, default=128)
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision for ESMFold (default fp32).")
     args = parser.parse_args()
     args.embeddings_dir = Path(args.embeddings_dir)
 
@@ -164,6 +163,8 @@ def cache_proteins_multi_gpu(args, sequences, gpus):
         ]
         if args.overwrite:
             cmd.append("--overwrite")
+        if args.amp:
+            cmd.append("--amp")
 
         print(f"[GPU {gpu_id}] Launching worker for {len(chunk)} sequences", flush=True)
         procs.append(subprocess.Popen(cmd, env=env))
@@ -210,7 +211,6 @@ def main():
     parser.add_argument("--base_dir", type=str, default=str(DEFAULT_BASE_DIR))
     parser.add_argument("--embeddings_dir", type=str, default=str(DEFAULT_EMBEDDINGS_DIR))
     parser.add_argument("--split_groups", nargs="+", default=None)
-    parser.add_argument("--threshold", type=str, default=None)
     parser.add_argument("--thresholds", nargs="+", default=None)
     parser.add_argument("--sequence_col", type=str, default="sequence")
     parser.add_argument("--smiles_col", type=str, default="smiles")
@@ -223,6 +223,7 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=128, help="ESMFold internal chunk size; lower reduces peak memory.")
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision for ESMFold (default fp32).")
     parser.add_argument("--skip_proteins", action="store_true", help="Skip ESMFold embedding; only (re-)cache ligand graphs.")
     parser.add_argument("--skip_ligands", action="store_true", help="Skip ligand graph caching; only (re-)cache protein embeddings.")
     # Worker-only args (parsed by _worker_main, accepted here to avoid argparse errors)
@@ -236,7 +237,6 @@ def main():
 
     args.base_dir = Path(args.base_dir)
     args.embeddings_dir = Path(args.embeddings_dir)
-    args.thresholds = normalize_threshold_args(args.thresholds, args.threshold)
     args.embeddings_dir.mkdir(parents=True, exist_ok=True)
 
     jobs = discover_split_jobs(args.base_dir, split_groups=args.split_groups, thresholds=args.thresholds)

@@ -34,12 +34,13 @@ def main():
     parser.add_argument("--pin_memory", action="store_true")
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision (default fp32).")
     args = parser.parse_args()
 
     checkpoint = torch.load(args.ckpt_path, map_location="cpu")
     train_args = checkpoint["args"]
     device = torch.device(args.device)
-    autocast_dtype, precision_mode = resolve_amp_dtype(device)
+    autocast_dtype, precision_mode = resolve_amp_dtype(device, args.amp)
 
     frame = read_table(Path(args.input_path))
     require_columns(frame, [args.sequence_col, args.smiles_col], Path(args.input_path))

@@ -87,10 +87,12 @@ class EmosaicBindingRegressor(nn.Module):
             pretrained=True,
         )
 
+        self.prot_resnet.eval()
         with torch.no_grad():
             dummy = torch.zeros(1, 1, self.max_length, self.prot_input_dim)
             out = self.prot_resnet(dummy)
             prot_hidden_size = int(out.reshape(out.shape[0], -1).shape[1])
+        self.prot_resnet.train()
         self.prot_hidden_size = prot_hidden_size
 
         self.attention = AttentivePooling(

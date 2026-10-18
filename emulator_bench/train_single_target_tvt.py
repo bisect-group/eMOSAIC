@@ -25,14 +25,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from emulator_bench.common import (
-    DEFAULT_BASE_DIR,
     DEFAULT_EMBEDDINGS_DIR,
-    DEFAULT_RESULTS_DIRNAME,
     append_csv_row,
     read_table,
     regression_metrics,
     require_columns,
-    resolve_single_split_job,
     save_json,
     set_seed,
 )
@@ -62,9 +59,7 @@ def _build_scheduler(optimizer, args):
 
 def _prepare_batch(batch, device: torch.device):
     batch = batch.to(device, non_blocking=True)
-    if device.type != "cuda":
-        batch.prot_emb = batch.prot_emb.float()  # float16 unsupported for BN on CPU
-    # on CUDA: prot_emb stays float16, autocast handles dtype per-op
+    batch.prot_emb = batch.prot_emb.float()  # embeddings are cached as float16
     # prot_mask stays bool — model does .float() in forward
     if hasattr(batch, "value"):
         batch.value = batch.value.float()
@@ -146,7 +141,7 @@ def evaluate_loader(model, loader, device, autocast_dtype=None, desc="Evaluation
     return truth_np, pred_np, metrics
 
 
-def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=None, clip_grad=None, desc="Train"):
+def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=None, desc="Train"):
     model.train()
     loss_fn = torch.nn.MSELoss(reduction="mean")
     total_loss = 0.0
@@ -161,15 +156,10 @@ def train_one_epoch(model, loader, optimizer, device, scaler, autocast_dtype=Non
             loss = loss_fn(prediction, target)
         if scaler.is_enabled():
             scaler.scale(loss).backward()
-            if clip_grad is not None and clip_grad > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            if clip_grad is not None and clip_grad > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
         n = int(batch.num_graphs)
@@ -188,23 +178,6 @@ def save_metrics(path: Path, metrics: dict) -> None:
     pd.DataFrame([metrics]).to_csv(path, index=False)
 
 
-def _resolve_paths(args):
-    if args.train_path and args.val_path and args.test_path:
-        return Path(args.train_path), Path(args.val_path), Path(args.test_path), None
-    if not args.base_dir or not args.split_group:
-        raise ValueError("Provide either explicit --train_path/--val_path/--test_path or --base_dir with --split_group.")
-    job = resolve_single_split_job(Path(args.base_dir), split_group=args.split_group, threshold=args.threshold)
-    return Path(job["train_path"]), Path(job["val_path"]), Path(job["test_path"]), job
-
-
-def _default_out_dir(args, job):
-    if args.out_dir:
-        return Path(args.out_dir)
-    if job is None:
-        raise ValueError("--out_dir is required when explicit train/val/test paths are used.")
-    return Path(job["root_dir"]) / args.results_dirname / f"seed_{args.seed}"
-
-
 def _filter_by_max_length(df: pd.DataFrame, sequence_col: str, max_length: int) -> pd.DataFrame:
     if max_length is None or max_length <= 0:
         return df
@@ -215,15 +188,11 @@ def _filter_by_max_length(df: pd.DataFrame, sequence_col: str, max_length: int) 
 
 def main():
     parser = argparse.ArgumentParser(description="Train eMOSAIC TrustAffinity regressor on explicit train/val/test split files.")
-    parser.add_argument("--base_dir", type=str, default=str(DEFAULT_BASE_DIR))
-    parser.add_argument("--split_group", type=str, default=None)
-    parser.add_argument("--threshold", type=str, default=None)
-    parser.add_argument("--train_path", type=str, default=None)
-    parser.add_argument("--val_path", type=str, default=None)
-    parser.add_argument("--test_path", type=str, default=None)
+    parser.add_argument("--train_path", type=str, required=True)
+    parser.add_argument("--val_path", type=str, required=True)
+    parser.add_argument("--test_path", type=str, required=True)
     parser.add_argument("--embeddings_dir", type=str, default=str(DEFAULT_EMBEDDINGS_DIR))
-    parser.add_argument("--out_dir", type=str, default=None)
-    parser.add_argument("--results_dirname", type=str, default=DEFAULT_RESULTS_DIRNAME)
+    parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--task_name", type=str, default="emosaic_retrain")
 
     parser.add_argument("--sequence_col", type=str, default="sequence")
@@ -247,7 +216,6 @@ def main():
     parser.add_argument("--amsgrad", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scheduler", choices=["none", "cosine_warm_restarts"], default="cosine_warm_restarts")
     parser.add_argument("--cosine_t0", type=int, default=10)
-    parser.add_argument("--clip_grad", type=float, default=1.0)
     parser.add_argument("--val_every", type=int, default=1, help="Validate every N epochs. 0 = end of training only.")
     parser.add_argument("--monitor_metric", choices=["rmse", "pearson", "spearman", "r2_score", "mae", "mse", "loss"], default="rmse")
 
@@ -260,20 +228,22 @@ def main():
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
     parser.add_argument("--torch_compile", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision (default fp32).")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
+    if args.amp:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
 
     set_seed(args.seed)
     device = torch.device(args.device)
-    autocast_dtype, precision_mode = resolve_amp_dtype(device)
+    autocast_dtype, precision_mode = resolve_amp_dtype(device, args.amp)
     scaler = torch.amp.GradScaler("cuda", enabled=(autocast_dtype == torch.float16))
 
-    train_path, val_path, test_path, job = _resolve_paths(args)
-    out_dir = _default_out_dir(args, job)
+    train_path, val_path, test_path = Path(args.train_path), Path(args.val_path), Path(args.test_path)
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     train_df = read_table(train_path)
@@ -357,6 +327,7 @@ def main():
     scheduler = _build_scheduler(optimizer, args)
 
     log_path = out_dir / "logfile.csv"
+    log_path.unlink(missing_ok=True)
     best_checkpoint_path = out_dir / "bestmodel.pth"
     best_state_dict_path = out_dir / "bestmodel_state_dict.pth"
     last_checkpoint_path = out_dir / "checkpoint_last.pt"
@@ -382,7 +353,6 @@ def main():
             device=device,
             scaler=scaler,
             autocast_dtype=autocast_dtype,
-            clip_grad=args.clip_grad,
             desc=f"Epoch {epoch} train",
         )
 

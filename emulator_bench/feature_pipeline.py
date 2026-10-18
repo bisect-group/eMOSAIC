@@ -34,9 +34,9 @@ def _autocast_context(device: torch.device, dtype=None):
     return nullcontext()
 
 
-def resolve_amp_dtype(device: torch.device):
-    """Pick bf16 on Ampere+ GPUs, fp16 on older CUDA, fp32 on CPU."""
-    if device.type != "cuda" or not torch.cuda.is_available():
+def resolve_amp_dtype(device: torch.device, amp: bool = False):
+    """fp32 unless amp is set; with amp pick bf16 on Ampere+ GPUs and fp16 on older CUDA."""
+    if not amp or device.type != "cuda" or not torch.cuda.is_available():
         return None, "fp32"
     index = device.index if device.index is not None else torch.cuda.current_device()
     major, _minor = torch.cuda.get_device_capability(index)

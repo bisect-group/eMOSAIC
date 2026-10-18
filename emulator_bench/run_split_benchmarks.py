@@ -24,12 +24,9 @@ if str(REPO_ROOT) not in sys.path:
 from emulator_bench.common import (
     DEFAULT_BASE_DIR,
     DEFAULT_EMBEDDINGS_DIR,
-    DEFAULT_RESULTS_DIRNAME,
-    DEFAULT_SPLIT_GROUPS,
+    DEFAULT_RESULTS_ROOT,
+    DEFAULT_SEEDS,
     discover_split_jobs,
-    normalize_threshold_args,
-    split_sizes,
-    summarize_seed_runs,
 )
 
 CACHE_SCRIPT = REPO_ROOT / "emulator_bench" / "cache_embeddings.py"
@@ -67,34 +64,20 @@ def maybe_cache_embeddings(args):
         cmd.extend(["--thresholds", *args.thresholds])
     if args.cache_overwrite:
         cmd.append("--overwrite")
+    if args.amp:
+        cmd.append("--amp")
     subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
 
 
-def maybe_load_hparams(args):
-    if not args.hparams_json:
-        return args
-    with open(args.hparams_json, "r") as handle:
-        payload = json.load(handle)
-    hparams = payload.get("best_hparams", payload)
-    for key in [
-        "batch_size",
-        "lr",
-        "weight_decay",
-        "beta1",
-        "beta2",
-        "eps",
-        "amsgrad",
-        "scheduler",
-        "cosine_t0",
-        "clip_grad",
-    ]:
-        if key in hparams:
-            setattr(args, key, hparams[key])
-    return args
+def result_dir(job, seed, args):
+    group_dir = Path(args.output_dir) / job["split_group"]
+    if job["split_name"] != job["split_group"]:
+        group_dir = group_dir / job["split_name"]
+    return group_dir / f"seed_{seed}"
 
 
 def train_one(job, seed, args, gpu_id=None):
-    result_root = Path(job["root_dir"]) / args.results_dirname / f"seed_{seed}"
+    result_root = result_dir(job, seed, args)
     metric_path = result_root / "final_results_test.csv"
     if metric_path.exists() and not args.overwrite:
         return result_root
@@ -158,8 +141,6 @@ def train_one(job, seed, args, gpu_id=None):
         args.scheduler,
         "--cosine_t0",
         str(args.cosine_t0),
-        "--clip_grad",
-        str(args.clip_grad),
         "--val_every",
         str(args.val_every),
         "--device",
@@ -172,8 +153,6 @@ def train_one(job, seed, args, gpu_id=None):
         str(args.protein_cache_items),
         "--seed",
         str(seed),
-        "--results_dirname",
-        args.results_dirname,
     ]
     if args.pin_memory:
         cmd.append("--pin_memory")
@@ -187,6 +166,8 @@ def train_one(job, seed, args, gpu_id=None):
         cmd.append("--lazy_ligands")
     if args.torch_compile:
         cmd.append("--torch_compile")
+    if args.amp:
+        cmd.append("--amp")
     if args.amsgrad:
         cmd.append("--amsgrad")
     else:
@@ -201,11 +182,9 @@ def _collect_row(job, seed, out_dir, args):
     row = {
         "split_group": job["split_group"],
         "split_name": job["split_name"],
-        "difficulty": job["difficulty"],
         "seed": int(seed),
         "run_dir": str(out_dir),
     }
-    row.update(split_sizes(Path(job["train_path"]), Path(job["val_path"]), Path(job["test_path"])))
     for prefix, metrics in (("val", val_metrics), ("test", test_metrics)):
         for key, value in metrics.items():
             row["%s_%s" % (prefix, key)] = value
@@ -227,7 +206,7 @@ def run_parallel(jobs, args):
                 job, seed = work_queue.get_nowait()
             except queue.Empty:
                 return
-            print(f"[GPU {gpu_id}] {job['split_group']} | {job['split_name']} | threshold {job['difficulty']} | seed {seed}", flush=True)
+            print(f"[GPU {gpu_id}] {job['split_group']} | {job['split_name']} | seed {seed}", flush=True)
             try:
                 out_dir = train_one(job, seed, args, gpu_id=gpu_id)
                 row = _collect_row(job, seed, out_dir, args)
@@ -235,9 +214,8 @@ def run_parallel(jobs, args):
                 row = {
                     "split_group": job["split_group"],
                     "split_name": job["split_name"],
-                    "difficulty": job["difficulty"],
                     "seed": int(seed),
-                    "run_dir": str(Path(job["root_dir"]) / args.results_dirname / ("seed_%s" % seed)),
+                    "run_dir": str(result_dir(job, seed, args)),
                     "status": "failed",
                     "error": str(exc),
                 }
@@ -260,11 +238,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run the eMOSAIC emulator bench across EMULaToR split groups.")
     parser.add_argument("--base_dir", type=str, default=str(DEFAULT_BASE_DIR))
     parser.add_argument("--embeddings_dir", type=str, default=str(DEFAULT_EMBEDDINGS_DIR))
-    parser.add_argument("--results_dirname", type=str, default=DEFAULT_RESULTS_DIRNAME)
-    parser.add_argument("--split_groups", nargs="+", default=None)
-    parser.add_argument("--threshold", type=str, default=None)
-    parser.add_argument("--thresholds", nargs="+", default=None)
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42])
+    parser.add_argument("--output_dir", type=str, default=None, help="Default: results/<base_dir name> in this repo.")
+    parser.add_argument("--split_groups", nargs="+", default=None, help="Default: all EMULaToR split groups found in --base_dir.")
+    parser.add_argument("--thresholds", nargs="+", default=None, help="Threshold folder names, e.g. threshold_0.05. Default: all found.")
+    parser.add_argument("--seeds", nargs="+", type=int, default=DEFAULT_SEEDS)
     parser.add_argument("--gpus", nargs="+", default=None, help="GPU IDs for parallel execution. If omitted, runs sequentially on --device.")
     parser.add_argument("--trials_per_gpu", type=int, default=1, help="Concurrent training jobs per GPU when --gpus is set.")
     parser.add_argument("--device", type=str, default="cuda:0")
@@ -272,7 +249,6 @@ def main():
     parser.add_argument("--skip_cache", action="store_true")
     parser.add_argument("--cache_overwrite", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--hparams_json", type=str, default=None)
 
     parser.add_argument("--sequence_col", type=str, default="sequence")
     parser.add_argument("--smiles_col", type=str, default="smiles")
@@ -296,7 +272,6 @@ def main():
     parser.add_argument("--amsgrad", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--scheduler", choices=["none", "cosine_warm_restarts"], default="cosine_warm_restarts")
     parser.add_argument("--cosine_t0", type=int, default=10)
-    parser.add_argument("--clip_grad", type=float, default=1.0)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--persistent_workers", action=argparse.BooleanOptionalAction, default=True)
@@ -305,6 +280,7 @@ def main():
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
     parser.add_argument("--torch_compile", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision (default fp32).")
 
     parser.add_argument("--long_seq_stride", type=int, default=500)
     parser.add_argument("--chunk_size", type=int, default=128)
@@ -314,8 +290,7 @@ def main():
     if args.trials_per_gpu <= 0:
         raise ValueError("--trials_per_gpu must be a positive integer")
 
-    args.thresholds = normalize_threshold_args(args.thresholds, args.threshold)
-    args = maybe_load_hparams(args)
+    args.output_dir = args.output_dir or str(DEFAULT_RESULTS_ROOT / Path(args.base_dir).name)
     maybe_cache_embeddings(args)
 
     jobs = discover_split_jobs(Path(args.base_dir), split_groups=args.split_groups, thresholds=args.thresholds)
@@ -331,19 +306,21 @@ def main():
         summary_rows = []
         for job in progress(jobs, desc="Benchmark jobs", unit="job"):
             for seed in args.seeds:
-                write(f"  {job['split_group']} | {job['split_name']} | threshold {job['difficulty']} | seed {seed}")
+                write(f"  {job['split_group']} | {job['split_name']} | seed {seed}")
                 out_dir = train_one(job, seed, args)
                 summary_rows.append(_collect_row(job, seed, out_dir, args))
 
-    base = Path(args.base_dir)
+    out_root = Path(args.output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
     runs_df = pd.DataFrame(summary_rows)
-    runs_df.to_csv(base / "emosaic_summary_runs.csv", index=False)
-    metric_cols = [col for col in runs_df.columns if col.startswith("test_")]
-    summarize_seed_runs(summary_rows, ["split_group", "split_name", "difficulty"], metric_cols).to_csv(
-        base / "emosaic_summary_thresholds.csv", index=False,
-    )
-    summarize_seed_runs(summary_rows, ["split_group"], metric_cols).to_csv(
-        base / "emosaic_summary_by_split_group.csv", index=False,
+    runs_df.to_csv(out_root / "emosaic_summary_runs.csv", index=False)
+    if "status" in runs_df and (runs_df["status"] == "failed").any():
+        failed = runs_df[runs_df["status"] == "failed"]
+        print(f"{len(failed)} job(s) failed:\n{failed[['split_group', 'split_name', 'seed', 'error']].to_string()}", file=sys.stderr)
+        sys.exit(1)
+    metric_cols = [col for col in runs_df.columns if col.startswith(("val_", "test_"))]
+    runs_df.groupby(["split_group", "split_name"], sort=False)[metric_cols].agg(["mean", "std"]).to_csv(
+        out_root / "emosaic_summary_splits.csv"
     )
 
 
