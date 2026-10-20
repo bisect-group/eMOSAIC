@@ -63,8 +63,6 @@ def maybe_cache_embeddings(args):
         cmd.extend(["--thresholds", *args.thresholds])
     if args.cache_overwrite:
         cmd.append("--overwrite")
-    if args.amp:
-        cmd.append("--amp")
     subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
 
 
@@ -278,7 +276,7 @@ def main():
     parser.add_argument("--protein_cache_items", type=int, default=512)
     parser.add_argument("--lazy_ligands", action="store_true")
     parser.add_argument("--torch_compile", action="store_true")
-    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision (default fp32).")
+    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision for training (default fp32).")
 
     parser.add_argument("--long_seq_stride", type=int, default=500)
     parser.add_argument("--chunk_size", type=int, default=128)

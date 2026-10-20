@@ -71,9 +71,9 @@ def cache_proteins_single_gpu(device_str, sequences, args):
         return {"proteins_total": len(sequences), "proteins_written": 0}
 
     device = torch.device(device_str)
-    autocast_dtype, precision_mode = resolve_amp_dtype(device, args.amp)
+    autocast_dtype, precision_mode = resolve_amp_dtype(device, not args.fp32)
     print(f"[{device_str}] Caching {len(pending)} proteins | precision: {precision_mode}", flush=True)
-    model = load_esmfold_model(device, chunk_size=args.chunk_size)
+    model = load_esmfold_model(device, chunk_size=args.chunk_size, esm_fp16=not args.fp32)
 
     written = 0
     iterator = progress(pending, desc=f"[{device_str}] ESMFold embeddings", unit="seq")
@@ -112,7 +112,7 @@ def _worker_main():
     parser.add_argument("--chunk_size", type=int, default=128)
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision for ESMFold (default fp32).")
+    parser.add_argument("--fp32", action="store_true", help="Run ESMFold in fp32 (default: bf16 autocast).")
     args = parser.parse_args()
     args.embeddings_dir = Path(args.embeddings_dir)
 
@@ -164,8 +164,8 @@ def cache_proteins_multi_gpu(args, sequences, gpus):
         ]
         if args.overwrite:
             cmd.append("--overwrite")
-        if args.amp:
-            cmd.append("--amp")
+        if args.fp32:
+            cmd.append("--fp32")
 
         print(f"[GPU {gpu_id}] Launching worker for {len(chunk)} sequences", flush=True)
         procs.append(subprocess.Popen(cmd, env=env))
@@ -224,7 +224,7 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=128, help="ESMFold internal chunk size; lower reduces peak memory.")
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--amp", action="store_true", help="Opt-in mixed precision for ESMFold (default fp32).")
+    parser.add_argument("--fp32", action="store_true", help="Run ESMFold in fp32 (default: bf16 autocast).")
     parser.add_argument("--skip_proteins", action="store_true", help="Skip ESMFold embedding; only (re-)cache ligand graphs.")
     parser.add_argument("--skip_ligands", action="store_true", help="Skip ligand graph caching; only (re-)cache protein embeddings.")
     # Worker-only args (parsed by _worker_main, accepted here to avoid argparse errors)
@@ -277,6 +277,7 @@ def main():
         "split_groups": [job["split_group"] for job in jobs],
         "thresholds": args.thresholds,
         "protein_dtype": args.protein_dtype,
+        "protein_precision": "fp32" if args.fp32 else "esm LM fp16 + bf16 autocast",
         "protein_model": "esmfold_v1 (structure-module s_s)",
         "protein_max_seq_len": int(args.max_seq_len),
         "protein_long_seq_stride": int(args.long_seq_stride),

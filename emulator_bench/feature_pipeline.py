@@ -46,8 +46,11 @@ def resolve_amp_dtype(device: torch.device, amp: bool = False):
 _ESMFOLD_CHECKPOINT = "facebook/esmfold_v1"
 
 
-def load_esmfold_model(device: torch.device, chunk_size: Optional[int] = 128):
-    """Load ESMFold v1 via HuggingFace transformers (facebook/esmfold_v1)."""
+def load_esmfold_model(device: torch.device, chunk_size: Optional[int] = 128, esm_fp16: bool = False):
+    """Load ESMFold v1 via HuggingFace transformers (facebook/esmfold_v1).
+
+    `esm_fp16` casts the ESM-2 language model to fp16; fp32 weights need about 15 GB.
+    """
     from transformers import AutoTokenizer, EsmForProteinFolding
 
     tokenizer = AutoTokenizer.from_pretrained(_ESMFOLD_CHECKPOINT)
@@ -57,6 +60,8 @@ def load_esmfold_model(device: torch.device, chunk_size: Optional[int] = 128):
         model.esm.set_chunk_size(int(chunk_size))
     if chunk_size is not None and hasattr(model, "trunk") and hasattr(model.trunk, "set_chunk_size"):
         model.trunk.set_chunk_size(int(chunk_size))
+    if esm_fp16:
+        model.esm = model.esm.half()
     model = model.to(device)
     return _HFEsmFoldWrapper(model, tokenizer, device)
 

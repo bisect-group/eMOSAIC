@@ -7,26 +7,27 @@ hyperparameter search.
 ## Data
 
 Default data: `data/processed/datasets/kinetic_dataset/ki` of the EMULaToR superproject
-(found from this repo's location). Use `--base_dir` for another task folder.
+(found from this repo's location). eMOSAIC runs on Ki only. Use `--base_dir` to override the root.
 Never use the `unified` datasets.
 
 Each split folder holds `train.parquet`, `val.parquet` and `test.parquet` with the columns
 `sequence`, `smiles` and `log10_value`. The scripts find these split groups under `--base_dir`:
 
 - `random_splits_grouped_sequence`, `random_splits_grouped_smiles`, `uniprot_time_splits`
-- `enzyme_sequence_splits/threshold_<t>`, `substrate_splits/threshold_<t>`
+- `enzyme_sequence_splits/threshold_<t>`, `enzyme_structure_splits/threshold_<t>`,
+  `substrate_splits/threshold_<t>`, `conformer_cosine_splits/threshold_<t>`
 
 The threshold folders come from disk. Use `--thresholds threshold_0.05` to select some.
 
 ## Outputs
 
-- Results: `<EMULaToR>/outputs/baselines/eMOSAIC/<task>/<split_group>/<split_name>/seed_<n>/` (`--output_dir`).
-  `<task>` is the name of the `--base_dir` folder (`ki` by default). `<split_name>` is `all` for flat split groups.
+- Results: `<EMULaToR>/outputs/baselines/eMOSAIC/ki/<split_group>/<split_name>/seed_<n>/` (`--output_dir`).
+  `<split_name>` is `all` for flat split groups.
   Each folder has `bestmodel.pth`, `logfile.csv`, `final_results_{train,val,test}.csv`,
   `pred_label_{train,val,test}.csv` and `run_summary.json`.
   `checkpoint_last.pt` holds the resumable training state.
 - Summaries: `emosaic_summary_runs.csv` and `emosaic_summary_splits.csv` in `--output_dir`.
-- Embedding cache: `<EMULaToR>/outputs/baselines/eMOSAIC/embeddings` (`--embeddings_dir`). It is shared by all tasks and seeds.
+- Embedding cache: `<EMULaToR>/outputs/baselines/eMOSAIC/embeddings` (`--embeddings_dir`). It is shared by all seeds.
   It has `proteins_v3/` and `ligands_v3/`. Protein keys cover the model, dtype and `max_seq_len`.
   Change `CACHE_VERSION` in `common.py` to force a rebuild.
 - The scripts never write to the dataset folders.
@@ -57,7 +58,8 @@ See `commands.txt` for the commands. Run them from `baselines/eMOSAIC`.
 ## Speed-ups (same model and settings)
 
 - Feature cache for proteins and ligands.
-- Training and caching run in fp32 like the original. `--amp` opts in to mixed precision (bf16 on Ampere or newer, fp16 with a grad scaler on older GPUs, plus TF32, cudnn benchmark and `channels_last` for the protein ResNet).
+- Protein cache: 3,495 of the 5,936 Ki proteins reuse the entries of the old v2 cache, copied under their v3 keys. The rest run with the ESM-2 language model in fp16 and bf16 autocast, stored as fp16. fp32 weights need about 15 GB and run out of memory at 700 residues on a 22 GB A10. `cache_embeddings.py --fp32` runs the full model in fp32 instead. The old entries differ from fp32 by 1-4% per element (cosine 0.9999). The new path differs from the old entries by the same amount (mean abs 0.2-0.8, cosine 0.9999-1.0). The manifest records `protein_precision`.
+- Training runs in fp32 like the original. `--amp` opts in to mixed precision (bf16 on Ampere or newer, fp16 with a grad scaler on older GPUs, plus TF32, cudnn benchmark and `channels_last` for the protein ResNet).
 - Data loader workers, optional `--preload_proteins`.
 - GPU-resident protein embedding table (default; `--no_gpu_protein_table` switches to per-sample loading with pinned memory).
 - Optional `--torch_compile`.

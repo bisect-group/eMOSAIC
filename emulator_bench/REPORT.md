@@ -28,9 +28,9 @@ Paper vs code: the paper gives hyperparameters only in Supplementary Tables 5 an
 The paper text says protein sequences longer than 700 are removed. The wrapper truncates to 700 residues instead (Leak-CURBER test rows must not be dropped).
 
 ## What the wrapper does now
-- `run_split_benchmarks.py` finds split folders in `--base_dir` (default `data/processed/datasets/kinetic_dataset/ki`): `random_splits_grouped_sequence`, `random_splits_grouped_smiles`, `uniprot_time_splits`, `enzyme_sequence_splits/threshold_*`, `substrate_splits/threshold_*`. Thresholds come from disk (now 0.05 and 0.545).
+- `run_split_benchmarks.py` finds split folders in `--base_dir` (default `data/processed/datasets/kinetic_dataset/ki`): `random_splits_grouped_sequence`, `random_splits_grouped_smiles`, `uniprot_time_splits`, `enzyme_sequence_splits/threshold_*`, `enzyme_structure_splits/threshold_*`, `substrate_splits/threshold_*`, `conformer_cosine_splits/threshold_*`. Thresholds come from disk (now 0.05, 0.705, 0.555 and 0.998).
 - Caches ESMFold and ligand features, then trains each split x seed (default seeds 666 777 888) with the original settings above. Optional `--gpus` runs jobs in parallel.
-- Writes results to `EMULaToR/outputs/baselines/eMOSAIC/<task>/...`, not into the dataset folders.
+- Writes results to `EMULaToR/outputs/baselines/eMOSAIC/ki/...`, not into the dataset folders.
 - `aggregate_results.py` computes mean and variance over seeds.
 
 ## Files
@@ -40,7 +40,7 @@ Unchanged: `dataset.py`, `modeling.py`. No original (non-emulator_bench) code wa
 
 ## Bugs and mismatches fixed
 - Default `--clip_grad 1.0` was not in the original. Gradient clipping is removed.
-- Default split groups had no random splits, and listed `enzyme_structure_splits` and `conformer_cosine_splits`, which do not exist. Defaults now match the folders on disk. Old `random_splits` alias and `group_shuffle_splits` code removed.
+- Default split groups had no random splits. Defaults now are the 7 Ki split groups. Old `random_splits` alias and `group_shuffle_splits` code removed.
 - Default paths pointed to `/home/mallikarjun/...` and a missing `data/processed/baselines` folder. Now repo-relative.
 - Results were written inside the dataset split folders. Now written to `--output_dir`.
 - Default seed 42 changed to 666 777 888.
@@ -51,9 +51,9 @@ Unchanged: `dataset.py`, `modeling.py`. No original (non-emulator_bench) code wa
 - `train_single_target_tvt.py` now needs explicit `--train_path/--val_path/--test_path/--out_dir` (the base_dir mode was removed).
 
 ## Deviations from the original protocol
-- Default precision is fp32, like the original (the Leak-CURBER appendix bf16 claim does not override the code). `--amp` is an opt-in flag in training, caching, prediction and the launcher. It turns on bf16 autocast (fp16 with GradScaler on pre-Ampere), TF32, cudnn benchmark and `channels_last` memory format for the protein ResNet. Protein embeddings are cast to fp32 on the device. `channels_last` changes the numerics slightly, so `--amp` runs are not bit-comparable with fp32 runs.
+- Default precision is fp32, like the original (the Leak-CURBER appendix bf16 claim does not override the code). `--amp` is an opt-in flag in training, prediction and the launcher. It turns on bf16 autocast (fp16 with GradScaler on pre-Ampere), TF32, cudnn benchmark and `channels_last` memory format for the protein ResNet. Protein embeddings are cast to fp32 on the device. `channels_last` changes the numerics slightly, so `--amp` runs are not bit-comparable with fp32 runs.
 - By default all unique protein embeddings sit in one fp16 table on the GPU (about 3.2 GB for the full ki set) and workers return only the ligand graph and a row index. The batch values are the same as with per-sample loading, and fp32 runs give identical results. `--no_gpu_protein_table` loads proteins in the workers instead. `--pin_memory` has no effect while the table is on.
-- Protein embeddings stored as fp16 in the cache.
+- Protein embeddings stored as fp16 in the cache. For Ki, 3,495 of 5,936 proteins reuse the old v2 cache entries (copied under their v3 keys). They differ from fp32 by 1-4% per element (cosine 0.9999). The other proteins run with the ESM-2 language model in fp16 and bf16 autocast, because fp32 weights (about 15 GB) run out of memory at 700 residues on a 22 GB A10. Against the old entries this path gives mean abs diff 0.2-0.8 and cosine 0.9999-1.0, the same as fp32 (`cache_embeddings.py --fp32` runs the full model fp32). The manifest records `protein_precision`.
 - Sequences truncated to 700 instead of dropped (see above).
 - Validation ranking uses RMSE (monotone with MSE, same checkpoint).
 - Embeddings come from HF `transformers` `facebook/esmfold_v1` (`s_s`). The original code loads precomputed embeddings from the authors' private disk, so the exact extractor cannot be checked. The ResNet output size (704) matches `combined_dim 1004`.
@@ -63,7 +63,7 @@ Unchanged: `dataset.py`, `modeling.py`. No original (non-emulator_bench) code wa
 python -u emulator_bench/run_split_benchmarks.py --seeds 666 777 888 --gpus 0 1 --pin_memory --preload_proteins
 python emulator_bench/aggregate_results.py --results_dir results/ki
 ```
-Only Ki applies to this model (`kinetic_dataset/ki`). For another task folder pass `--base_dir` and `--output_dir`.
+Only Ki applies to this model (`kinetic_dataset/ki`). `--base_dir` overrides the split root.
 
 ## Smoke test
 Env: `/home/adhil/.conda/envs/mldb`, GPU 1 (A10), fp32 default. Tiny data (64/32/32 rows) from `ki` random_splits_grouped_sequence and enzyme_sequence_splits/threshold_0.05, copied to the scratchpad. ESMFold weights are not cached locally, so protein embeddings were random 384-dim fakes written with the wrapper's cache writer. Ligand caching used the real `cache_embeddings.py --skip_proteins`.
