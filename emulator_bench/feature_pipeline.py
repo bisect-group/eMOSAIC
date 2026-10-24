@@ -82,21 +82,15 @@ class _HFEsmFoldWrapper:
         input_ids = enc["input_ids"].to(self.device)
         attention_mask = enc["attention_mask"].to(self.device) if "attention_mask" in enc else None
         output = self.model(input_ids, attention_mask=attention_mask)
-        s_s = getattr(output, "s_s", None)
-        if s_s is None and isinstance(output, dict):
-            s_s = output.get("s_s")
-        return {"s_s": s_s}
+        return {"states": output["states"] if isinstance(output, dict) else output.states}
 
 
 def _structure_module_embedding(model, sequence: str, device: torch.device, autocast_dtype=None) -> np.ndarray:
-    """Return the ESMFold structure-module single representation `s_s` for one sequence."""
+    """Return the final ESMFold structure-module single state (384-d per residue) for one sequence."""
     with torch.no_grad(), _autocast_context(device, autocast_dtype):
-        output = model.infer([sequence])
-        states = output["s_s"]
-        if states is None:
-            raise RuntimeError("ESMFold output did not expose `s_s`; check model/version.")
-    rep = states[0, : len(sequence)].detach().cpu().float().numpy()
-    return rep
+        states = model.infer([sequence])["states"]
+    # states: [structure-module blocks, batch, length, 384]
+    return states[-1, 0, : len(sequence)].detach().cpu().float().numpy()
 
 
 def embed_sequences(

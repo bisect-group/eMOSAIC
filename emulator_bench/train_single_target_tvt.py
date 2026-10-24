@@ -70,6 +70,11 @@ def _prepare_batch(batch, device: torch.device, protein_table=None):
     return batch
 
 
+def check_protein_width(cache_dim: int, prot_input_dim: int) -> None:
+    if cache_dim != prot_input_dim:
+        raise ValueError(f"Cache width {cache_dim} != --prot_input_dim {prot_input_dim}; rebuild the protein cache.")
+
+
 def _metric_direction(metric_name: str) -> str:
     return "minimize" if metric_name in MINIMIZE_METRICS else "maximize"
 
@@ -288,12 +293,7 @@ def main():
     sample_sequence = str(train_df[args.sequence_col].iloc[0])
     sample_cached = protein_store.get(sample_sequence)
     detected_prot_dim = int(sample_cached["embedding"].shape[1])
-    if args.prot_input_dim != detected_prot_dim:
-        print(
-            f"[info] Overriding --prot_input_dim {args.prot_input_dim} with detected {detected_prot_dim} from cache.",
-            flush=True,
-        )
-        args.prot_input_dim = detected_prot_dim
+    check_protein_width(detected_prot_dim, args.prot_input_dim)
 
     protein_table = protein_index = None
     if args.gpu_protein_table:

@@ -56,7 +56,7 @@ Unchanged: `dataset.py`, `modeling.py`. No original (non-emulator_bench) code wa
 - Protein embeddings stored as fp16 in the cache. For Ki, 3,495 of 5,936 proteins reuse the old v2 cache entries (copied under their v3 keys). They differ from fp32 by 1-4% per element (cosine 0.9999). The other proteins run with the ESM-2 language model in fp16 and bf16 autocast, because fp32 weights (about 15 GB) run out of memory at 700 residues on a 22 GB A10. Against the old entries this path gives mean abs diff 0.2-0.8 and cosine 0.9999-1.0, the same as fp32 (`cache_embeddings.py --fp32` runs the full model fp32). The manifest records `protein_precision`.
 - Sequences truncated to 700 instead of dropped (see above).
 - Validation ranking uses RMSE (monotone with MSE, same checkpoint).
-- Embeddings come from HF `transformers` `facebook/esmfold_v1` (`s_s`). The original code loads precomputed embeddings from the authors' private disk, so the exact extractor cannot be checked. The ResNet output size (704) matches `combined_dim 1004`.
+- Embeddings come from HF `transformers` `facebook/esmfold_v1` (final structure-module single state, `states[-1]`, 384-d). The paper (Methods) names the structure-module sequence representation. The original code loads precomputed embeddings from the authors' private disk, so the exact extractor cannot be checked. The ResNet output size (704 = 700 x 384) matches `combined_dim 1004`.
 
 ## Commands (from `baselines/eMOSAIC`, env mldb)
 ```
@@ -74,7 +74,7 @@ Not tested: real ESMFold embedding (`facebook/esmfold_v1` download, ~8 GB), mult
 
 ## Open issues
 - Supplementary Tables 5 and 6 (paper hyperparameters) were not available. Code defaults used.
-- Original embedding extractor is not reproducible from the repo. The HF ESMFold `s_s` embedding is an assumption.
+- Original embedding extractor is not reproducible from the repo. The HF `states[-1]` choice follows the paper text and the 384-d width.
 - Protein embeddings are cached as fp16 (the extractor is unverified anyway).
 - Time-split ki on disk: `uniprot_time_splits` has 9512 val and 8728 test rows (as in manifest).
 - `results/` for the full Ki run is large (checkpoints per seed x split). The ESMFold cache for 183k Ki rows needs a long first run.

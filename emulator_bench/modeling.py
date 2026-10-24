@@ -56,7 +56,7 @@ class EmosaicBindingRegressor(nn.Module):
 
     Mirrors `code/BindingAffinityModule/model.py::BindingModel2` but auto-infers the
     flattened ResNet output size from a dummy forward so the block works with any
-    cached protein embedding width (e.g., ESMFold `s_s`).
+    cached protein embedding width (the final ESMFold structure-module state, 384-d).
     """
 
     def __init__(

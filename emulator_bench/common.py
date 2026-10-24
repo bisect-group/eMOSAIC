@@ -24,7 +24,8 @@ DEFAULT_BASE_DIR = REPO_ROOT.parents[1] / "data" / "processed" / "datasets" / "k
 DEFAULT_OUT_ROOT = REPO_ROOT.parents[1] / "outputs" / "baselines" / "eMOSAIC"
 DEFAULT_EMBEDDINGS_DIR = DEFAULT_OUT_ROOT / "embeddings"
 CACHE_VERSION = 3
-PROTEIN_MODEL = "esmfold_v1"
+PROTEIN_CACHE_VERSION = 4
+PROTEIN_MODEL = "esmfold_v1_structure_module"
 DEFAULT_SEEDS = [666, 777, 888]
 DEFAULT_SPLIT_GROUPS = [
     "random_splits_grouped_sequence",
@@ -62,7 +63,7 @@ def ligand_cache_key(smiles: str) -> str:
 
 def protein_cache_path(embeddings_dir: Path, sequence: str, max_seq_len: int, protein_dtype: str) -> Path:
     key = protein_cache_key(sequence, max_seq_len, protein_dtype)
-    return Path(embeddings_dir) / f"proteins_v{CACHE_VERSION}" / key[:2] / f"{key}.npz"
+    return Path(embeddings_dir) / f"proteins_v{PROTEIN_CACHE_VERSION}" / key[:2] / f"{key}.npz"
 
 
 def ligand_cache_path(embeddings_dir: Path, smiles: str) -> Path:

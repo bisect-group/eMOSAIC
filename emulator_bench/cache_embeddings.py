@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from emulator_bench.common import (
     DEFAULT_BASE_DIR,
     CACHE_VERSION,
+    PROTEIN_CACHE_VERSION,
     DEFAULT_EMBEDDINGS_DIR,
     discover_split_jobs,
     ligand_cache_path,
@@ -225,6 +226,8 @@ def main():
     parser.add_argument("--protein_dtype", choices=["float16", "float32"], default="float16")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--fp32", action="store_true", help="Run ESMFold in fp32 (default: bf16 autocast).")
+    parser.add_argument("--sequences_file", type=str, default=None,
+                        help="Text file with one truncated sequence per line; only these proteins are cached.")
     parser.add_argument("--skip_proteins", action="store_true", help="Skip ESMFold embedding; only (re-)cache ligand graphs.")
     parser.add_argument("--skip_ligands", action="store_true", help="Skip ligand graph caching; only (re-)cache protein embeddings.")
     # Worker-only args (parsed by _worker_main, accepted here to avoid argparse errors)
@@ -251,6 +254,9 @@ def main():
         smiles_col=args.smiles_col,
         max_seq_len=args.max_seq_len,
     )
+    if args.sequences_file:
+        wanted = set(Path(args.sequences_file).read_text().split())
+        sequences = [seq for seq in sequences if seq in wanted]
     print(f"Discovered {len(jobs)} split jobs")
     print(f"Unique normalized sequences (truncated to {args.max_seq_len} residues): {len(sequences)}")
     print(f"Unique SMILES: {len(smiles_values)}")
@@ -270,6 +276,7 @@ def main():
 
     manifest = {
         "cache_version": CACHE_VERSION,
+        "protein_cache_version": PROTEIN_CACHE_VERSION,
         "base_dir": str(args.base_dir),
         "embeddings_dir": str(args.embeddings_dir),
         "sequence_col": args.sequence_col,
@@ -278,7 +285,7 @@ def main():
         "thresholds": args.thresholds,
         "protein_dtype": args.protein_dtype,
         "protein_precision": "fp32" if args.fp32 else "esm LM fp16 + bf16 autocast",
-        "protein_model": "esmfold_v1 (structure-module s_s)",
+        "protein_model": "esmfold_v1 (final structure-module single state, 384-d)",
         "protein_max_seq_len": int(args.max_seq_len),
         "protein_long_seq_stride": int(args.long_seq_stride),
         "protein_chunk_size": int(args.chunk_size) if args.chunk_size else None,

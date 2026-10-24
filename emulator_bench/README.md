@@ -58,7 +58,7 @@ See `commands.txt` for the commands. Run them from `baselines/eMOSAIC`.
 ## Speed-ups (same model and settings)
 
 - Feature cache for proteins and ligands.
-- Protein cache: 3,495 of the 5,936 Ki proteins reuse the entries of the old v2 cache, copied under their v3 keys. The rest run with the ESM-2 language model in fp16 and bf16 autocast, stored as fp16. fp32 weights need about 15 GB and run out of memory at 700 residues on a 22 GB A10. `cache_embeddings.py --fp32` runs the full model in fp32 instead. The old entries differ from fp32 by 1-4% per element (cosine 0.9999). The new path differs from the old entries by the same amount (mean abs 0.2-0.8, cosine 0.9999-1.0). The manifest records `protein_precision`.
+- Protein cache (`proteins_v4`): the final ESMFold structure-module single state (`states[-1]`, 384 per residue). It is not the 1024-d folding-trunk `s_s` of the older `proteins_v3` cache, which is never read. The ESM-2 language model runs in fp16 with bf16 autocast, stored as fp16. fp32 weights need about 15 GB and run out of memory at 700 residues on a 22 GB A10. `cache_embeddings.py --fp32` runs the full model in fp32 instead. The manifest records `protein_precision`. Training stops with an error if the cache width differs from `--prot_input_dim`.
 - Training runs in fp32 like the original. `--amp` opts in to mixed precision (bf16 on Ampere or newer, fp16 with a grad scaler on older GPUs, plus TF32, cudnn benchmark and `channels_last` for the protein ResNet).
 - Data loader workers, optional `--preload_proteins`.
 - GPU-resident protein embedding table (default; `--no_gpu_protein_table` switches to per-sample loading with pinned memory).
