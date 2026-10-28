@@ -4,6 +4,7 @@ Run from baselines/eMOSAIC on CPU:  CUDA_VISIBLE_DEVICES= python -m pytest tests
 """
 import copy
 import importlib.util
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -40,6 +41,8 @@ MAX_LEN, PROT_DIM, EMB_DIM = 700, 384, 300
 SMILES = ["CCO", "c1ccccc1O", "CC(=O)Oc1ccccc1C(=O)O", "CCN(CC)CC", "OC(=O)CC(O)(CC(O)=O)C(O)=O", "CC(C)Cc1ccc(cc1)C(C)C(O)=O"]
 LENGTHS = [30, 75, 120, 700, 10, 400]
 LR, WEIGHT_DECAY = 1e-4, 1e-4
+# Calm toy for the GPU test: more rows, larger batch and lower lr keep bf16 rounding noise small, so a 5% weight error stands out.
+GPU_ROWS, GPU_BATCH, GPU_EPOCHS, GPU_LR = 96, 48, 3, 1e-4
 
 
 def _load_original_collate():
@@ -190,6 +193,14 @@ def test_batches_equal_original_collate(data, use_table):
         assert torch.equal(getattr(wb, key), getattr(graphs, key)), key
 
 
+@pytest.fixture(scope="module")
+def gpu_data():
+    lengths = np.random.default_rng(3).integers(20, 120, GPU_ROWS)
+    sequences = _random_sequences(lengths, seed=4)
+    targets = np.random.default_rng(5).uniform(-2, 3, GPU_ROWS).round(3).tolist()
+    return sequences, _embeddings(sequences), [SMILES[i % len(SMILES)] for i in range(GPU_ROWS)], targets
+
+
 def _make_cache_and_splits(tmp_path, data):
     sequences, embeddings, smiles, targets = data
     cache = tmp_path / "cache"
@@ -259,3 +270,78 @@ def test_lr_schedule_matches_original():
         original = lrs(lambda s, epoch: s.step(epoch))
     wrapper = lrs(lambda s, epoch: s.step())
     np.testing.assert_allclose(wrapper, original, rtol=1e-12)
+
+
+K = 10  # the production gap may be 10 times the fp32 noise (the bf16 run with initial weights perturbed by one bf16 rounding) before it counts as a defect
+
+
+U = 2**-8  # one rounding of the weights at the production precision (bf16)
+
+
+def _perturb(module, rel=U):
+    generator = torch.Generator().manual_seed(123)
+    with torch.no_grad():
+        for p in module.parameters():
+            p.add_(rel * p.abs() * torch.randn(p.shape, generator=generator).to(p.device))
+    return module
+
+
+def _scale(module, rel=float(os.environ.get("EQUIV_NEGATIVE_CONTROL_SIZE", 0.05))):
+    generator = torch.Generator().manual_seed(321)
+    with torch.no_grad():
+        for p in module.parameters():
+            p.mul_(1 + rel * torch.randn(p.shape, generator=generator).to(p.device))
+    return module
+
+
+def _train_on_gpu(data, tmp_path, name, amp, noise=False, scale=False):
+    (tmp_path / name).mkdir()
+    cache, split = _make_cache_and_splits(tmp_path / name, data)
+    out = tmp_path / name / "run"
+    argv = [
+        "train", "--train_path", str(split), "--val_path", str(split), "--test_path", str(split),
+        "--embeddings_dir", str(cache), "--out_dir", str(out), "--epochs", str(GPU_EPOCHS), "--batch_size", str(GPU_BATCH), "--lr", str(GPU_LR),
+        "--num_workers", "0", "--device", "cuda:0", "--seed", "123", *(["--amp"] if amp else []),
+    ]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "argv", argv)
+        # Dropout masks depend on the dtype and the kernel, so they are removed from every run.
+        patch.setattr(F, "dropout", lambda input, p=0.5, training=True, inplace=False: input)
+        if noise:
+            patch.setattr(tvt, "build_model", lambda *a, **k: _perturb(build_model(*a, **k)))
+        if scale:
+            patch.setattr(tvt, "build_model", lambda *a, **k: _scale(build_model(*a, **k)))
+        tvt.main()
+    return pd.read_csv(out / "logfile.csv")["train_loss"].to_numpy(), pd.read_csv(out / "final_results_test.csv")["rmse"][0]
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
+def test_amp_training_stays_close_to_fp32(gpu_data, tmp_path):
+    """Production `--amp` (bf16 autocast, channels_last ResNet, GPU fp16 protein table) against fp32 on the same GPU.
+
+    Every run uses the real main(), one seed and the same batches (see GPU_* constants: more rows, larger batch and lower lr than the CPU tests), with
+    dropout removed (its masks differ between dtypes). The reference is fp32; the noise control is the bf16 run with initial
+    weights perturbed by 2**-8 relative. Bounds: max per-step loss gap and final test RMSE gap each within K times
+    their noise floor; the step-0 loss gap within K times its floor. The protein table is fp16 in all runs.
+    With EQUIV_NEGATIVE_CONTROL=1 the compared bf16 run starts from weights scaled by 1.05; the test must fail.
+    """
+    (ref, ref_rmse), (noise, noise_rmse), (prod, prod_rmse) = (
+        _train_on_gpu(gpu_data, tmp_path, "fp32", amp=False),
+        _train_on_gpu(gpu_data, tmp_path, "noise", amp=True, noise=True),
+        _train_on_gpu(gpu_data, tmp_path, "amp", amp=True),
+    )
+    cand, cand_rmse = prod, prod_rmse
+    if os.environ.get("EQUIV_NEGATIVE_CONTROL") == "1":
+        cand, cand_rmse = _train_on_gpu(gpu_data, tmp_path, "negative", amp=True, scale=True)
+    floor, gap = np.abs(noise - prod).max(), np.abs(cand - ref).max()
+    tiny, tiny0 = 1e-7 * np.abs(ref).max(), 1e-7 * abs(ref[0])
+    gap0, floor0 = abs(cand[0] - ref[0]), abs(noise[0] - prod[0])
+    final_gap, final_floor = abs(cand_rmse - ref_rmse), abs(noise_rmse - prod_rmse)
+    print(
+        f"emosaic bf16: max gap={gap:.3e}, max floor={floor:.3e}, ratio={gap / max(floor, tiny):.2f}, K={K}, "
+        f"step0 gap={gap0:.3e}, floor={floor0:.3e}, ratio={gap0 / max(floor0, tiny0):.2f}; final gap={final_gap:.3e}, final floor={final_floor:.3e}; ref={ref.tolist()} prod={cand.tolist()}"
+    )
+    assert gap0 <= K * max(floor0, tiny0)
+    assert gap <= K * max(floor, tiny)
+    assert final_gap <= K * max(final_floor, 1e-7 * abs(ref_rmse))

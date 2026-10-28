@@ -63,3 +63,23 @@ See `commands.txt` for the commands. Run them from `baselines/eMOSAIC`.
 - Data loader workers, optional `--preload_proteins`.
 - GPU-resident protein embedding table (default; `--no_gpu_protein_table` switches to per-sample loading with pinned memory).
 - Optional `--torch_compile`.
+
+## Verify equivalence
+
+```
+emulator_bench/verify_equivalence.sh          # CPU, fp32/fp64, about 20 s
+emulator_bench/verify_equivalence.sh --gpu    # also the bf16 test; needs one CUDA device
+```
+
+Expected env: `mldb` (torch, torch_geometric, rdkit, scikit-learn, pytest). The script does not create it. It fails if any CPU test is skipped. It needs no private data or downloads: it uses random protein embeddings and a tiny random ESMFold.
+
+What `tests/` compares:
+- Model: outputs, loss and gradients against the original `BindingModel2` in fp64 (atol 1e-10), in eval mode and in train mode with seeded dropout.
+- Batches: wrapper batches (with and without the protein table) against the original collate, exactly.
+- Training: one optimizer step of the wrapper `main()` against the original `trainer.train` (atol 1e-6, dropout removed on both sides). The learning-rate schedule matches (rtol 1e-12). Neither side clips gradients.
+- Features: the structure-module feature extractor and the 384-d cache width check.
+- `--gpu`: three epochs of `main()` with `--amp` (bf16, `channels_last`) against fp32 on the same GPU and seed. Dropout is removed from all runs, because dropout masks differ between dtypes. The toy has 96 rows, batch 48, lr 1e-4, 3 epochs. The noise control is the production run with initial weights perturbed by one rounding of the production dtype (2**-8, bf16). Per step, the gap |production - fp32| must be at most 10 times the floor |perturbed production - production|. The same holds for the final test RMSE. Step 0 is judged like every other step: its gap must be at most 10 times its floor. Each test prints `max gap`, `max floor` and `ratio`; run with `-s` to see the line.
+
+Negative control: `emulator_bench/verify_equivalence.sh --negative-control` multiplies each initial weight of the compared (production) run by 1 + 0.20 * randn (fixed seed; size set by `EQUIV_NEGATIVE_CONTROL_SIZE`) and runs only the GPU tests. It exits 0 only if every GPU test fails, so a passing GPU test shows a bound too loose to catch a 20% random weight error. The eMOSAIC bf16 test detects a random per-weight error of 20% and larger, not 5%, because its bf16 loss is weakly sensitive to weights; the fp32 CPU tests check exact equivalence. A uniform x1.05 scale is not used because BatchNorm makes it nearly a no-op.
+
+Not exact: `--amp` training differs from fp32 by rounding. The protein cache is stored in fp16 and the GPU table is fp16 in both modes. The original metric code needs an older scikit-learn (`squared=`), so the test replaces it with plain MSE.
