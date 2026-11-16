@@ -1,0 +1,13 @@
+# Paper-run commands for eMOSAIC-T (Ki). emulator_bench/run.sh runs them. Run from baselines/eMOSAIC.
+# PY: python of the conda env (we used mldb). Defaults: <EMULaToR>/data/processed/datasets/kinetic_dataset/ki,
+# runs <EMULaToR>/outputs/baselines/eMOSAIC/ki/<split_group>/<split_name>/seed_<n>, cache <...>/eMOSAIC/embeddings.
+PY=python
+
+# Cache ESMFold protein states and ligand graphs (--gpus are ids among the visible GPUs).
+$PY -u emulator_bench/cache_embeddings.py --gpus 0 --max_seq_len 700 --chunk_size 32
+
+# Train and evaluate: seeds 666 777 888, bf16 (--amp). The paper used --runs_per_gpu 3 on an 80 GB A100.
+$PY -u emulator_bench/run_split_benchmarks.py --skip_cache --amp --seeds 666 777 888 --gpus 0 --runs_per_gpu 1
+
+# Mean and variance over seeds.
+$PY emulator_bench/aggregate_results.py --results_dir ../../outputs/baselines/eMOSAIC/ki

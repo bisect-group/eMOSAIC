@@ -10,7 +10,6 @@ allowable_features = { # from Yang
         Chem.rdchem.ChiralType.CHI_UNSPECIFIED,
         Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CW,
         Chem.rdchem.ChiralType.CHI_TETRAHEDRAL_CCW,
-        Chem.rdchem.ChiralType.CHI_OTHER,
     ],
     "possible_hybridization_list": [
         Chem.rdchem.HybridizationType.S,
@@ -19,7 +18,7 @@ allowable_features = { # from Yang
         Chem.rdchem.HybridizationType.SP3,
         Chem.rdchem.HybridizationType.SP3D,
         Chem.rdchem.HybridizationType.SP3D2,
-        Chem.rdchem.HybridizationType.UNSPECIFIED,
+        Chem.rdchem.HybridizationType.OTHER,
     ],
     "possible_numH_list": [0, 1, 2, 3, 4, 5, 6, 7, 8],
     "possible_implicit_valence_list": [0, 1, 2, 3, 4, 5, 6],
@@ -33,10 +32,18 @@ allowable_features = { # from Yang
     "possible_aromatic_list": [True, False],
     "possible_bond_dirs": [  # only for double bond stereo information
         Chem.rdchem.BondDir.NONE,
-        Chem.rdchem.BondDir.ENDUPRIGHT,
-        Chem.rdchem.BondDir.ENDDOWNRIGHT,
+        Chem.rdchem.BondDir.BEGINWEDGE,
+        Chem.rdchem.BondDir.BEGINDASH,
     ],
 }
+
+def _safe_index(lst, val):
+    """Return lst.index(val), or the last index if val is not in the list."""
+    try:
+        return lst.index(val)
+    except ValueError:
+        return len(lst) - 1
+
 
 def mol_to_graph_data_obj_simple(mol): # from Yang
     """
@@ -51,16 +58,12 @@ def mol_to_graph_data_obj_simple(mol): # from Yang
     atom_features_list = []
     for atom in mol.GetAtoms():
         atom_feature = (
-            [allowable_features["possible_atomic_num_list"].index(atom.GetAtomicNum())]
-            + [allowable_features["possible_degree_list"].index(atom.GetDegree())]
-            + [allowable_features["possible_formal_charge_list"].index(atom.GetFormalCharge())]
-            + [
-                allowable_features["possible_hybridization_list"].index(
-                    atom.GetHybridization()
-                )
-            ]
-            + [allowable_features["possible_aromatic_list"].index(atom.GetIsAromatic())]
-            + [allowable_features["possible_chirality_list"].index(atom.GetChiralTag())]
+            [_safe_index(allowable_features["possible_atomic_num_list"], atom.GetAtomicNum())]
+            + [_safe_index(allowable_features["possible_degree_list"], atom.GetDegree())]
+            + [_safe_index(allowable_features["possible_formal_charge_list"], atom.GetFormalCharge())]
+            + [_safe_index(allowable_features["possible_hybridization_list"], atom.GetHybridization())]
+            + [_safe_index(allowable_features["possible_aromatic_list"], atom.GetIsAromatic())]
+            + [_safe_index(allowable_features["possible_chirality_list"], atom.GetChiralTag())]
         )
         atom_features_list.append(atom_feature)
     x = torch.tensor(np.array(atom_features_list), dtype=torch.long)
@@ -74,8 +77,8 @@ def mol_to_graph_data_obj_simple(mol): # from Yang
             i = bond.GetBeginAtomIdx()
             j = bond.GetEndAtomIdx()
             edge_feature = [
-                allowable_features["possible_bonds"].index(bond.GetBondType())
-            ] + [allowable_features["possible_bond_dirs"].index(bond.GetBondDir())]
+                _safe_index(allowable_features["possible_bonds"], bond.GetBondType())
+            ] + [_safe_index(allowable_features["possible_bond_dirs"], bond.GetBondDir())]
             edges_list.append((i, j))
             edge_features_list.append(edge_feature)
             edges_list.append((j, i))
